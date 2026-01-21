@@ -33,21 +33,25 @@ pip install pandas xlsxwriter tqdm openpyxl
 
 ---
 
-## 🛠 How to Use
+🛠 How to Use
+Option A: Running the Executable (.exe)
 
-### 1. Prepare your Instruction File
+Download the excel_auditor.exe from the releases folder.
 
-Your **Instruction Excel** must contain a column named exactly `Action` (case-insensitive).
+Double-click the file to launch.
 
-* **ADD:** The auditor checks if this row exists *anywhere* in the Target sheet.
-* **DELETE:** The auditor checks if this row has been *removed* from the Target sheet.
+No installation required. The tool runs in a standalone environment and does not require administrative privileges.
 
-> **Note:** All other columns in your Instruction file must match the header names in your Target file for the comparison to work.
+Option B: Running via Python
 
-### 2. Run the Script
-
-```bash
+Bash
 python excel_auditor.py
+📋 Preparation Requirements
+Action Column: Your Instruction Excel must have a column named Action.
+
+Column Alignment: Ensure the headers in your Instruction file (e.g., Part ID, Zone, Value) exactly match the headers in the Target file.
+
+Row Content: The tool is case-insensitive and ignores accidental spaces, so you don't need to worry about "IP" vs "ip".
 
 ```
 
