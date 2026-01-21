@@ -64,7 +64,7 @@ For the audit to succeed, your files must follow these simple rules:
 To re-build the standalone executable without requiring admin privileges, use **PyInstaller** with the following command:
 
 ```bash
-pyinstaller --noconfirm --onefile --windowed --name "Excel_Auditor_v2.0" --clean "excel_auditor.py"
+pyinstaller --noconfirm --onefile --windowed --name "Excel_Auditor_v2.0" --clean "main.py"
 
 ```
 
