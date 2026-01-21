@@ -3,6 +3,7 @@ from tkinter import filedialog, Tk
 from tkinter import messagebox
 from tqdm import tqdm
 import time
+import datetime
 
 
 def user_input_files():
@@ -26,9 +27,14 @@ def unmerge_data(data_dict, is_instruction_file=False):
     processed_dict = {}
     for sheet_name, df in data_dict.items():
         if is_instruction_file and len(df.columns) > 0:
-            last_col = df.columns[-1]
-            data_cols = df.columns[:-1]
-            df[data_cols] = df[data_cols].ffill()
+            # Flexible check for Action column in unmerge logic too
+            action_col = next((col for col in df.columns if str(col).strip().lower() == 'action'), None)
+            if action_col:
+                # Fill everything EXCEPT the action column
+                data_cols = [c for c in df.columns if c != action_col]
+                df[data_cols] = df[data_cols].ffill()
+            else:
+                df = df.ffill()
         else:
             df = df.ffill()
         processed_dict[sheet_name] = df
@@ -37,151 +43,200 @@ def unmerge_data(data_dict, is_instruction_file=False):
 
 def run_audit(target_dict, instructions_dict):
     audit_results = {}
+    skipped_no_action = []
 
-    # Process each sheet
     for sheet_name, df_inst in instructions_dict.items():
         clean_name = sheet_name.strip()
         target_sheet_key = next((k for k in target_dict.keys() if k.strip() == clean_name), None)
 
         if target_sheet_key:
             df_target = target_dict[target_sheet_key]
-            action_col = df_inst.columns[-1]
-            audit_cols = list(df_inst.columns[1:-1])
-            key_cols = [df_inst.columns[4], df_inst.columns[5]]
-
             df_inst = df_inst.copy()
+
+            action_col = next((col for col in df_inst.columns if str(col).strip().lower() == 'action'), None)
+            if action_col is None:
+                skipped_no_action.append(sheet_name)
+                continue
+
+            common_cols = [col for col in df_inst.columns if col in df_target.columns and col != action_col]
+            if not common_cols: continue
+
             df_inst['Audit_Status'] = 'Unknown'
 
-            # --- STABLE PROGRESS BAR ---
-            # mininterval=1.0 means it only updates the screen ONCE per second
-            # maxinterval=2.0 ensures it doesn't get lazy
-            pbar = tqdm(df_inst.iterrows(), total=len(df_inst),
-                        desc=f"Auditing {sheet_name[:20]}...",
-                        unit="row",
-                        mininterval=1.0,
-                        maxinterval=2.0)
+            # --- CORRECTED NORMALIZATION ---
+            def normalize(df_subset):
+                # We convert to string, then upper, THEN replace the 'NAN' string
+                return (df_subset.astype(str)
+                        .replace(u'\xa0', u' ', regex=True)
+                        .apply(lambda x: x.str.upper().str.strip())
+                        .replace('NAN', ''))
+
+            # Normalize the entire Target once for the "Pool" check
+            df_target_clean = normalize(df_target[common_cols])
+
+            pbar = tqdm(df_inst.iterrows(), total=len(df_inst), desc=f"Auditing {sheet_name[:20]}")
 
             for index, row in pbar:
-                row_to_check = row[audit_cols]
-                action = str(row[action_col]).strip().lower()
+                try:
+                    # Normalize the single instruction row
+                    # We wrap in DataFrame because normalize expects a 2D object for .apply
+                    row_df = pd.DataFrame([row[common_cols]])
+                    row_to_check = normalize(row_df).iloc[0]
 
-                # Comparison Logic
-                match_condition = (df_target[audit_cols] == row_to_check).all(axis=1)
-                exists_perfectly = match_condition.any()
+                    action = str(row[action_col]).strip().lower() if pd.notna(row[action_col]) else ""
 
-                if action == 'add':
-                    if exists_perfectly:
-                        df_inst.at[index, 'Audit_Status'] = 'PASS'
-                    else:
-                        key_data = row[key_cols]
-                        partial_match = (df_target[key_cols] == key_data).all(axis=1)
-                        if partial_match.any():
-                            found_at = df_target.index[partial_match].tolist()
-                            df_inst.at[index, 'Audit_Status'] = f'FAIL (Found partial match at rows {found_at})'
+                    # Check if this exact row exists anywhere in the pool
+                    is_present_anywhere = (df_target_clean == row_to_check).all(axis=1).any()
+
+                    if action == 'add':
+                        if is_present_anywhere:
+                            df_inst.at[index, 'Audit_Status'] = 'PASS'
                         else:
-                            df_inst.at[index, 'Audit_Status'] = 'FAIL (Not found)'
+                            df_inst.at[index, 'Audit_Status'] = 'FAIL (Not found in target)'
 
-                elif action == 'delete':
-                    df_inst.at[index, 'Audit_Status'] = 'PASS' if not exists_perfectly else 'FAIL (Still Exists)'
+                    elif action == 'delete':
+                        if not is_present_anywhere:
+                            df_inst.at[index, 'Audit_Status'] = 'PASS'
+                        else:
+                            df_inst.at[index, 'Audit_Status'] = 'FAIL (Still exists in target)'
 
-            audit_results[sheet_name] = df_inst
+                except Exception as row_err:
+                    df_inst.at[index, 'Audit_Status'] = f'ERROR: {str(row_err)}'
+
+            audit_results[sheet_name] = (df_inst, action_col)
         else:
-            print(f"\n⚠️ Skipping {sheet_name}: Not found in Target.")
+            print(f"⚠️ Skipping {sheet_name}")
 
-    return audit_results
-
+    return audit_results, skipped_no_action
 
 def export_to_txt(data_dict, filename):
     with open(filename, "w", encoding="utf-8") as f:
-        for sheet_name, df in data_dict.items():
-            f.write(f"\n{'=' * 40}\nSHEET: {sheet_name}\n{'=' * 40}\n")
-            # Force numbers to show without scientific notation
+        for sheet_name, result_data in data_dict.items():
+            df, action_name = result_data
+            f.write(f"\n{'=' * 40}\nSHEET: {sheet_name} (Action Col: {action_name})\n{'=' * 40}\n")
             output = df.to_string(float_format=lambda x: f'{x:f}'.rstrip('0').rstrip('.'), index=False)
             f.write(output)
             f.write("\n\n")
 
 
-def export_summary_report(audit_results, missing_sheets, extra_sheets, filename="AUDIT_SUMMARY.txt"):
+def export_summary_report(audit_results, missing_sheets, extra_sheets, skipped_no_action, filename="AUDIT_SUMMARY.txt"):
     with open(filename, "w", encoding="utf-8") as f:
-        f.write("=== COMPLETE AUDIT LOG ===\n")
+        f.write("============================================================\n")
+        f.write("                  COMPLETE AUDIT SUMMARY LOG\n")
+        f.write("============================================================\n\n")
 
-        # Report Missing Sheets
-        if missing_sheets:
-            f.write("\n⚠️  MISSING SHEETS (Expected but not found in Target):\n")
-            for s in missing_sheets: f.write(f"  - {s}\n")
+        # --- 1. SHEET STRUCTURE ANALYSIS ---
+        f.write("--- 1. SHEET STRUCTURE ANALYSIS ---\n")
+        if audit_results:
+            f.write("✅ Sheets with 'Action' column found and audited:\n")
+            for name, (df, action_name) in audit_results.items():
+                f.write(f"  - {name} (Detected Action Header: '{action_name}')\n")
 
-        # Report Extra Sheets
-        if extra_sheets:
-            f.write("\n⚠️  EXTRA SHEETS (Found in Target but not in Instructions):\n")
-            for s in extra_sheets: f.write(f"  - {s}\n")
+        if skipped_no_action:
+            f.write("\n❌ Sheets ignored (No 'Action' column found in Row 1):\n")
+            for s in skipped_no_action:
+                f.write(f"  - {s}\n")
 
         f.write("\n" + "=" * 60 + "\n\n")
 
+        # --- 2. FILE CONSISTENCY ---
+        f.write("--- 2. FILE CONSISTENCY CHECK ---\n")
+        if missing_sheets:
+            f.write("\n⚠️ MISSING SHEETS: " + ", ".join(missing_sheets) + "\n")
+        if extra_sheets:
+            f.write("\n⚠️ EXTRA SHEETS: " + ", ".join(extra_sheets) + "\n")
+        if not missing_sheets and not extra_sheets:
+            f.write("\n✅ Sheet names match perfectly between files.\n")
+
+        f.write("\n" + "=" * 60 + "\n\n")
+
+        # --- 3. DETAILED TASK BREAKDOWN (The part we missed!) ---
+        f.write("--- 3. DETAILED AUDIT RESULTS ---\n\n")
+
         total_tasks = 0
         total_pass = 0
-        total_fail = 0
 
-        for sheet_name, df in audit_results.items():
+        for sheet_name, (df, action_name) in audit_results.items():
+            # Filter rows that were actually audited
             checked_rows = df[df['Audit_Status'] != 'Unknown'].copy()
             num_tasks = len(checked_rows)
             num_pass = len(checked_rows[checked_rows['Audit_Status'] == 'PASS'])
-            num_fail = num_tasks - num_pass
 
             total_tasks += num_tasks
             total_pass += num_pass
-            total_fail += num_fail
 
             f.write(f"SHEET: {sheet_name}\n")
-            f.write(f"Stats: {num_tasks} Total | {num_pass} Pass | {num_fail} Fail\n")
+            f.write(f"Stats: {num_tasks} Total Tasks | {num_pass} Pass | {num_tasks - num_pass} Fail\n")
             f.write("-" * 40 + "\n")
-            f.write(checked_rows.to_string(index=False))
+
+            if not checked_rows.empty:
+                # This line restores the detailed table in your TXT report
+                f.write(checked_rows.to_string(index=False))
+            else:
+                f.write(" (No actions processed in this sheet)")
+
             f.write("\n" + "=" * 60 + "\n\n")
 
-        f.write("=== FINAL TOTALS ===\n")
-        f.write(f"TOTAL INSTRUCTIONS PROCESSED: {total_tasks}\n")
-        f.write(f"TOTAL SUCCESS: {total_pass}\n")
-        f.write(f"TOTAL FAILED: {total_fail}\n")
+        # --- 4. FINAL TOTALS ---
+        f.write("--- 4. FINAL PERFORMANCE TOTALS ---\n")
+        f.write(f"TOTAL INSTRUCTIONS PROCESSED : {total_tasks}\n")
+        f.write(f"TOTAL SUCCESSFUL ACTIONS     : {total_pass}\n")
+        f.write(f"TOTAL FAILED ACTIONS         : {total_tasks - total_pass}\n")
+
+        if total_tasks > 0:
+            success_rate = (total_pass / total_tasks) * 100
+            f.write(f"AUDIT SUCCESS RATE           : {success_rate:.2f}%\n")
 
     print(f"Summary report created: {filename}")
 
+def export_to_excel_report(audit_results, missing_sheets, extra_sheets):
+    # Generating timestamp for the filename
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"AUDIT_FOR_ENGINEER_{timestamp}.xlsx"
 
-def export_to_excel_report(audit_results, missing_sheets, extra_sheets, filename="AUDIT_FOR_ENGINEER.xlsx"):
     writer = pd.ExcelWriter(filename, engine='xlsxwriter')
     workbook = writer.book
 
-    # Create Discrepancy Tab if any sheet mismatches exist
+    # 1. Discrepancy Tab
     if missing_sheets or extra_sheets:
         issues = []
         for s in missing_sheets: issues.append([s, "MISSING IN TARGET"])
         for s in extra_sheets: issues.append([s, "EXTRA IN TARGET"])
-
         df_warn = pd.DataFrame(issues, columns=['Sheet Name', 'Discrepancy Type'])
         df_warn.to_excel(writer, sheet_name='SHEET_DISCREPANCIES', index=False)
-        writer.sheets['SHEET_DISCREPANCIES'].set_tab_color('#FF9900')  # Orange tab
+        writer.sheets['SHEET_DISCREPANCIES'].set_tab_color('#FF9900')
 
-    # Global Summary Sheet
-    summary_data = []
-    for sheet_name, df in audit_results.items():
-        checked = df[df['Audit_Status'] != 'Unknown']
-        summary_data.append([sheet_name, len(checked), len(checked[checked['Audit_Status'] == 'PASS']),
-                             len(checked) - len(checked[checked['Audit_Status'] == 'PASS'])])
+    # 2. Tracking used names to prevent Excel crashes (31 char limit)
+    used_names = set()
 
-    df_summary = pd.DataFrame(summary_data, columns=['Sheet Name', 'Total Tasks', 'Passed', 'Failed'])
-    df_summary.to_excel(writer, sheet_name='OVERALL_SUMMARY', index=False)
-
-    # Individual Sheets (with Red/Green formatting)
     green_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
     red_format = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
 
-    for sheet_name, df in audit_results.items():
+    for sheet_name, result_data in audit_results.items():
+        df, action_name = result_data
         checked_rows = df[df['Audit_Status'] != 'Unknown'].copy()
         if checked_rows.empty: continue
 
-        short_name = sheet_name[:31]
-        checked_rows.to_excel(writer, sheet_name=short_name, index=False)
-        worksheet = writer.sheets[short_name]
-        status_col_idx = checked_rows.columns.get_loc("Audit_Status")
+        # --- SMART NAME TRUNCATION LOGIC ---
+        # Excel limit is 31. We truncate and check for duplicates.
+        base_name = sheet_name.strip()[:30]
+        final_name = base_name
+        counter = 1
 
+        while final_name.lower() in used_names:
+            suffix = f"_{counter}"
+            # Ensure the name + suffix doesn't exceed 31
+            final_name = base_name[:(31 - len(suffix))] + suffix
+            counter += 1
+
+        used_names.add(final_name.lower())
+        # -----------------------------------
+
+        checked_rows.to_excel(writer, sheet_name=final_name, index=False)
+        worksheet = writer.sheets[final_name]
+
+        # Formatting
+        status_col_idx = checked_rows.columns.get_loc("Audit_Status")
         worksheet.conditional_format(1, status_col_idx, len(checked_rows), status_col_idx,
                                      {'type': 'text', 'criteria': 'containing', 'value': 'PASS',
                                       'format': green_format})
@@ -194,82 +249,65 @@ def export_to_excel_report(audit_results, missing_sheets, extra_sheets, filename
 
     writer.close()
     print(f"Excel Report Created: {filename}")
+    return filename
 
 
 def check_sheet_consistency(target_dict, instructions_dict):
     target_sheets = set(k.strip() for k in target_dict.keys())
     instruction_sheets = set(k.strip() for k in instructions_dict.keys())
-
-    # 1. In Instructions but NOT in Target (Missing)
-    missing_in_target = list(instruction_sheets - target_sheets)
-
-    # 2. In Target but NOT in Instructions (Extra/Unexpected)
-    extra_in_target = list(target_sheets - instruction_sheets)
-
-    return missing_in_target, extra_in_target
+    return list(instruction_sheets - target_sheets), list(target_sheets - instruction_sheets)
 
 
 def main():
-    # 1. Professional Terminal Header
     print("=" * 60)
-    print("             Excel File Auditor v1.0")
+    print("             Excel File Auditor v1.2")
     print("        Data Integrity & Consistency Engine")
     print("=" * 60)
     print("\n[STEP 1/4] Selecting files...")
 
     try:
-        # 2. Load Files (Uses your existing Tkinter dialogs)
+        # Load Files
         target_raw, inst_raw = user_input_files()
 
         print("\n[STEP 2/4] Cleaning data and unmerging cells...")
-        # Clean Merged Cells (Uses your ffill protection for Action column)
         target_clean = unmerge_data(target_raw, is_instruction_file=False)
         inst_clean = unmerge_data(inst_raw, is_instruction_file=True)
 
-        # 3. Bidirectional Consistency Check (Missing vs Extra)
+        # Consistency Check
         missing, extra = check_sheet_consistency(target_clean, inst_clean)
 
-        print("\n[STEP 3/4] Running Audit...")
-        # 4. Audit Logic (The Hunter)
-        final_audit_report = run_audit(target_clean, inst_clean)
+        print("\n[STEP 3/4] Running Smart Audit...")
+        final_audit_report, skipped = run_audit(target_clean, inst_clean)
 
         print("\n[STEP 4/4] Generating Reports...")
-        # 5. Export All Reports
-        # Note: We pass 'missing' and 'extra' to the functions that handle them
-        export_to_txt(final_audit_report, "AUDIT_REPORT_RAW.txt")
-        export_summary_report(final_audit_report, missing, extra, "AUDIT_SUMMARY.txt")
-        export_to_excel_report(final_audit_report, missing, extra, "AUDIT_FOR_ENGINEER.xlsx")
+        # Generating a shared timestamp for all files in this session
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
 
-        # 6. Final Success Notification
+        export_to_txt(final_audit_report, f"AUDIT_RAW_{ts}.txt")
+        export_summary_report(final_audit_report, missing, extra, skipped, f"AUDIT_SUMMARY_{ts}.txt")
+        excel_name = export_to_excel_report(final_audit_report, missing, extra)
+
+        # Final Notification
+        messagebox.showinfo("Audit Complete",
+                            f"The audit has finished successfully!\n\n"
+                            f"Main Report: {excel_name}")
+
         print("\n" + "=" * 60)
         print("SUCCESS: Audit completed successfully.")
-        print(f"Sheets Audited: {len(final_audit_report)}")
-        if missing or extra:
-            print(f"Discrepancies: Found {len(missing)} missing and {len(extra)} extra sheets.")
         print("=" * 60)
 
-        messagebox.showinfo("Audit Complete",
-                            "The audit has finished successfully!\n\n"
-                            "Reports generated:\n"
-                            "1. AUDIT_SUMMARY.txt\n"
-                            "2. AUDIT_FOR_ENGINEER.xlsx\n"
-                            "3. AUDIT_REPORT_RAW.txt")
-
-    except PermissionError:
-        error_msg = ("Permission Denied!\n\n"
-                     "Please close 'AUDIT_FOR_ENGINEER.xlsx' if it is open and try again.")
-        print(f"\n❌ ERROR: {error_msg}")
-        messagebox.showerror("File Error", error_msg)
+        # Friendly Exit Countdown
+        print("\nClosing automatically in:", end=" ", flush=True)
+        for i in range(5, 0, -1):
+            print(f"{i}...", end=" ", flush=True)
+            time.sleep(1)
+        print("Done.")
 
     except Exception as e:
-        error_msg = f"An unexpected error occurred:\n{e}"
         print(f"\n❌ CRITICAL ERROR: {e}")
-        messagebox.showerror("Unexpected Error", error_msg)
-
-    # 7. THE PAUSE: This is vital for the .exe version
-    # It prevents the terminal from closing until the user presses Enter.
-    print("\nProcess finished.")
-    input("Press ENTER to exit this window...")
+        messagebox.showerror("Unexpected Error", f"An error occurred:\n{e}")
+        # On error, we wait indefinitely so the user can read the console
+        input("\nPress ENTER to close and investigate the error...")
 
 
 if __name__ == "__main__":
