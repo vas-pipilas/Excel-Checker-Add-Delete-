@@ -1,91 +1,89 @@
-Here is a comprehensive `README.md` for your repository. It highlights the professional "State-Based" logic we developed and provides clear instructions for any engineer who might use your tool.
-
----
-
 # Excel State-Based Auditor v2.0
 
-A robust Python-based utility designed to audit Excel files by comparing a **Target** file against an **Instruction** plan. Unlike traditional row-by-row auditors, this tool uses **State-Based Integrity Logic** to verify if requested changes (Adds/Deletes) are reflected in the final state of the data, regardless of row positioning.
+A professional-grade Python utility designed to audit Excel files by comparing a **Target** file against an **Instruction** plan. This tool uses **State-Based Integrity Logic** to verify if requested changes (Adds/Deletes) are reflected in the final state of the data, regardless of row positioning.
+
+---
 
 ## 🚀 Key Features
 
-* **State-Based Auditing:** Uses "Pool Search" logic to verify data existence. Ideal for "Move" operations where data is deleted from one section and added to another.
-* **Deep Normalization:** Automatically handles case-insensitivity, leading/trailing whitespace, and invisible Unicode non-breaking spaces (`\xa0`).
-* **Structural Flexibility:** Automatically unmerges cells and applies forward-fill (`ffill`) to ensure data continuity.
-* **Dynamic Header Discovery:** Finds the required `Action` column anywhere in the sheet—no hard-coded column indices.
-* **Production Ready:** * Handles Excel’s 31-character sheet name limit with recursive naming.
-* Generates timestamped reports to prevent accidental data loss.
-* Includes a GUI file picker and progress bars for large datasets.
+* **State-Based Auditing:** Uses "Pool Search" logic to verify data existence. Ideal for "Move" operations where data is moved between sections.
+* **Deep Normalization:** Handles case-insensitivity, leading/trailing whitespace, and invisible Unicode non-breaking spaces (`\xa0`).
+* **Structural Flexibility:** Automatically unmerges cells and applies forward-fill (`ffill`) for data continuity.
+* **Dynamic Header Discovery:** Automatically finds the required `Action` column anywhere in the sheet.
+* **Production Ready:** * Bypasses Excel's 31-character sheet name limit with recursive naming.
+* Generates timestamped reports to prevent overwriting previous results.
+* Standard User Permissions: Runs without administrative/elevated privileges.
 
 
 
 ---
 
-## 📋 Requirements
+## 🛠 How to Use
 
-* **Python 3.8+**
-* **Dependencies:**
+### Option A: Running the Executable (.exe)
+
+1. Download `Excel_Auditor_v2.0.exe`.
+2. Double-click to launch. No installation or Python environment is required.
+3. **Permissions:** This tool runs under standard user rights; no admin password is needed.
+
+### Option B: Running via Python
+
+1. **Install Dependencies:**
 ```bash
 pip install pandas xlsxwriter tqdm openpyxl
 
 ```
 
 
-
----
-
-🛠 How to Use
-Option A: Running the Executable (.exe)
-
-Download the excel_auditor.exe from the releases folder.
-
-Double-click the file to launch.
-
-No installation required. The tool runs in a standalone environment and does not require administrative privileges.
-
-Option B: Running via Python
-
-Bash
+2. **Execute:**
+```bash
 python excel_auditor.py
-📋 Preparation Requirements
-Action Column: Your Instruction Excel must have a column named Action.
-
-Column Alignment: Ensure the headers in your Instruction file (e.g., Part ID, Zone, Value) exactly match the headers in the Target file.
-
-Row Content: The tool is case-insensitive and ignores accidental spaces, so you don't need to worry about "IP" vs "ip".
 
 ```
 
-### 3. Select Files
 
-1. **Target File:** The modified Excel file you want to verify.
-2. **Instruction File:** The plan containing the "Add" and "Delete" instructions.
-
-### 4. Review the Report
-
-The tool generates a new file: `AUDIT_FOR_ENGINEER_YYYYMMDD_HHMM.xlsx`.
-
-* **PASS (Green):** The state matches the instruction.
-* **FAIL (Red):** The data was either not found (for an ADD) or still exists (for a DELETE).
 
 ---
 
-## 🧠 Logic: The "Pool of Truth"
+## 📋 Data Requirements
 
-Traditional auditors fail when a row moves from Index 10 to Index 50. This tool treats the Target sheet as a **Virtual State**.
+For the audit to succeed, your files must follow these simple rules:
 
-1. It creates a **Normalized Pool** of all data in the Target sheet.
-2. It converts all data to Uppercase and Stripped Strings to ensure that `$100`, `"100"`, and `" 100 "` are all treated as the same value.
-3. It validates the **Existence** or **Absence** of the record to confirm the state transition was successful.
+1. **The Action Column:** The Instruction file **must** contain a column named exactly `Action`.
+* **ADD:** Validates that the row exists anywhere in the Target.
+* **DELETE:** Validates that the row is completely missing from the Target.
+
+
+2. **Header Matching:** Other column headers in the Instruction file must match the headers in the Target file (e.g., *IP Address*, *Category*, *ID*).
+3. **Case & Space:** The tool is "forgiving"—it ignores differences in Uppercase/Lowercase and accidental trailing spaces.
+
+---
+
+## 📦 Developer: Packing the EXE
+
+To re-build the standalone executable without requiring admin privileges, use **PyInstaller** with the following command:
+
+```bash
+pyinstaller --noconfirm --onefile --windowed --name "Excel_Auditor_v2.0" --clean "excel_auditor.py"
+
+```
+
+> **Flag Guide:**
+> * `--onefile`: Bundles everything into a single, portable file.
+> * `--windowed`: Suppresses the terminal window for a cleaner GUI experience.
+> * `--clean`: Clears the cache to ensure a fresh build of the state logic.
+> 
+> 
 
 ---
 
 ## 📝 Change Log (v2.0)
 
 * **Refactor:** Moved from positional checking to Pool-based integrity checking.
-* **Fix:** Resolved false negatives in "Move" operations.
-* **Fix:** Added Unicode `\xa0` normalization for web-scraped or copy-pasted data.
-* **UX:** Added automated success countdown and persistent error logging.
+* **Fix:** Resolved "False Negatives" on data-move operations.
+* **Fix:** Added Unicode `\xa0` normalization for copy-pasted Excel data.
+* **UX:** Added automated 5-second success countdown and persistent error pop-ups.
 
 ---
 
-**Would you like me to add a "Troubleshooting" section to this README to explain how to handle common Excel data-type errors?**
+**Would you like me to also provide the `.gitignore` file content to ensure your `build/`, `dist/`, and local test Excels don't clutter your GitHub repo?**
